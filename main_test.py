@@ -173,7 +173,9 @@ def local_keyword_fallback(user_text):
         return {"action": "shutdown", "args": {}, "reply": ""}
     if "restart" in txt:
         return {"action": "restart", "args": {}, "reply": ""}
-
+    if "sleep" in txt or "hibernate" in txt:
+        return {"action": "sleep", "args": {}, "reply": ""}
+    
     # WiFi
     if "turn on wifi" in txt or "enable wifi" in txt:
         return {"action": "enable_wifi", "args": {}, "reply": ""}
@@ -216,6 +218,55 @@ def local_keyword_fallback(user_text):
         return {"action": "open_url", "args": {"url": "https://www.youtube.com"}, "reply": ""}
     if "google" in txt:
         return {"action": "open_url", "args": {"url": "https://www.google.com"}, "reply": ""}
+    # --- Custom Websites & Apps from List ---
+    
+    # Facebook
+    if "facebook" in txt:
+        return {"action": "open_url", "args": {"url": "https://www.facebook.com"}, "reply": ""}
+        
+    # YouTube Music
+    if "youtube music" in txt or "yt music" in txt:
+        return {"action": "open_url", "args": {"url": "https://music.youtube.com"}, "reply": ""}
+        
+    # ChatGPT
+    if "chatgpt" in txt or "chat gpt" in txt:
+        return {"action": "open_url", "args": {"url": "https://chatgpt.com"}, "reply": ""}
+
+    # Grok (xAI)
+    if "grok" in txt:
+        return {"action": "open_url", "args": {"url": "https://grok.com"}, "reply": ""}
+
+    # Notepad
+    if "notepad" in txt:
+        return {"action": "open_app", "args": {"app_name": "notepad"}, "reply": ""}
+
+    # Camera
+    if "camera" in txt:
+        return {"action": "open_app", "args": {"app_name": "camera"}, "reply": ""}
+        
+    # File Explorer
+    if "file explorer" in txt or "this pc" in txt:
+        return {"action": "open_app", "args": {"app_name": "explorer"}, "reply": ""}
+
+    # Recycle Bin
+    if "recycle bin" in txt:
+        return {"action": "open_path", "args": {"path": "shell:RecycleBinFolder"}, "reply": ""}
+
+    # uTorrent
+    if "utorrent" in txt:
+        return {"action": "open_app", "args": {"app_name": "utorrent"}, "reply": ""}
+
+    # WinDirStat
+    if "windirstat" in txt:
+        return {"action": "open_app", "args": {"app_name": "windirstat"}, "reply": ""}
+
+    # backiee (Wallpaper app)
+    if "backiee" in txt:
+        return {"action": "open_app", "args": {"app_name": "backiee"}, "reply": ""}
+    
+    # NitroSense
+    if "nitrosense" in txt or "nitro sense" in txt:
+        return {"action": "open_app", "args": {"app_name": "nitrosense"}, "reply": ""}
 
     # Open path/app
     if "open" in txt:
@@ -254,6 +305,7 @@ def query_llama_for_action(user_text, context=None, timeout=8):
         "Allowed actions and their meanings:\n"
         "- shutdown: shut down the system\n"
         "- restart: restart the system\n"
+        "- sleep: put the system to sleep mode\n"
         "- enable_wifi / disable_wifi / wifi_status: manage/check WiFi\n"
         "- take_screenshot / copy_screenshot: screenshot operations\n"
         "- open_url: open a web URL (args.url)\n"
@@ -391,7 +443,10 @@ def dispatch_action(action_obj, voice, original_command):
         if action in ("restart",):
             safe_call(pc.restart_system)
             return speak_and_return("Restarting the system, please wait.")
-
+        if action == "sleep":
+            safe_call(pc.sleep_system)
+            return speak_and_return("Putting the system to sleep, Boss.")
+        
         # WiFi
         if action == "enable_wifi":
             ok = safe_call(wifi.enable_wifi, default=False)
