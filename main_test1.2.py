@@ -158,22 +158,23 @@ def get_relevant_memories(user_input, limit=3):
 # -------------------
 def security_alert(text):
     global current_security_status
+    # ফাইলের নাম আলাদা করা (যদি টেক্সটে থাকে)
+    file_name = text.split(":")[-1].strip() if ":" in text else "Unknown File"
     
-    # 1. Update the live dashboard status
-    file_name = text.split(":")[-1].strip() if ":" in text else "Unknown"
+    # স্ট্যাটাস আপডেট করা যা সরাসরি স্ক্রিনে দেখাবে
     current_security_status = f"THREAT DETECTED: {file_name}"
     
-    # 2. Print Alert
-    print(f"\n\n[!] SECURITY SHIELD: {current_security_status}")
+    print(f"\n[!] SECURITY ALERT TRIGGERED: {current_security_status}")
     
-    # 3. Speak Alert (using global engine reference if available)
     if global_voice_engine:
-        global_voice_engine.speak(text)
+        global_voice_engine.speak(f"Warning Sir! I have detected a sensitive file named {file_name}")
     
-    # 4. Reset Status after short delay logic (handled in loop usually, but we reset generic here)
-    time.sleep(2) 
-    current_security_status = "System Secure"
+    # ৫ সেকেন্ড পর স্ট্যাটাস আবার নরমাল হবে
+    threading.Timer(5.0, reset_security_status).start()
 
+def reset_security_status():
+    global current_security_status
+    current_security_status = "System Secure"
 # -------------------
 # Local Keyword Fallback
 # -------------------
@@ -278,18 +279,19 @@ def dispatch_action(action_obj, voice, original_command):
         finish("I encountered an error executing that command.")
 
 # -------------------
-# Main Jarvis Loop
+# Main Jarvis Loop (Optimized & Error-free)
 # -------------------
 def start_jarvis():
-    global global_voice_engine
+    global global_voice_engine, current_security_status
     
     if JarvisVoiceEngine is None:
         print("[!] Jarvis voice engine missing.")
         return
 
     try:
+        # ভয়েস ইঞ্জিন সেটআপ
         voice = JarvisVoiceEngine()
-        global_voice_engine = voice # Allow security thread to use voice
+        global_voice_engine = voice 
         voice.greet()
     except Exception as e:
         print(f"[!] Voice Engine Init Error: {e}")
@@ -298,29 +300,48 @@ def start_jarvis():
     # --- Live Dashboard Loop ---
     while True:
         try:
-            # 1. Show Status (Listening Mode)
-            print(f"\r[STATUS: {current_security_status}] >>> Jarvis is Listening...", end="", flush=True)
+            # ১. স্ট্যাটাস রিফ্রেশ (এটি রিয়েল-টাইম স্ট্যাটাস দেখাবে)
+            status_line = f"\r[STATUS: {current_security_status}] >>> Jarvis is Listening..."
+            sys.stdout.write(status_line)
+            sys.stdout.flush()
             
-            # 2. Listen for command
+            # ২. কমান্ড শোনার চেষ্টা
             command = voice.listen() 
             
             if command:
-                # 3. Show Status (Processing Mode)
-                print(f"\r[STATUS: {current_security_status}] >>> Jarvis is Processing...", end="", flush=True)
+                # ৩. কমান্ড প্রসেসিং স্ট্যাটাস আপডেট
+                processing_line = f"\r[STATUS: {current_security_status}] >>> Jarvis is Processing..."
+                sys.stdout.write(processing_line)
+                sys.stdout.flush()
                 
-                # Check for quick exit
-                if any(w in command.lower() for w in ["exit", "quit", "stop"]):
-                    voice.speak("Goodbye, Sir.")
+                # দ্রুত এক্সিট চেক
+                clean_cmd = command.lower().strip()
+                if any(w in clean_cmd for w in ["exit", "quit", "stop", "goodbye"]):
+                    voice.speak("Goodbye, Sir. System remains under watch.")
                     break
                 
-                # 4. LLM Processing
-                action_obj = query_llama_for_action(command)
-                dispatch_action(action_obj, voice, command)
-            
+                # ৪. LLM এবং অ্যাকশন এক্সিকিউশন
+                # এখানে try-except দেওয়া হয়েছে যাতে LLM এরর দিলেও মেইন লুপ বন্ধ না হয়
+                try:
+                    action_obj = query_llama_for_action(command)
+                    if action_obj:
+                        dispatch_action(action_obj, voice, command)
+                except Exception as llm_err:
+                    print(f"\n[!] LLM Dispatch Error: {llm_err}")
+
+            # থ্রেডগুলোকে সামান্য সময় দেওয়া যাতে সিস্টেম হ্যাং না হয়
+            time.sleep(0.1)
+
+        except KeyboardInterrupt:
+            print("\n[!] Manual Shutdown Initiated.")
+            break
         except Exception as e:
+            # যেকোনো এরর হলেও লুপ চলবে যাতে জার্ভিস ক্রাশ না করে
             print(f"\n[!] Main Loop Error: {e}")
+            time.sleep(1) 
             continue
 
+    print("\n[+] Jarvis is offline.")
 # -------------------
 # System Entry Point
 # -------------------

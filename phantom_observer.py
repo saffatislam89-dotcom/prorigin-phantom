@@ -154,9 +154,26 @@ class FileContentAnalyzerHandler(FileSystemEventHandler):
             self.executor.submit(self._process, file_path)
         except OSError: pass
 
-    def _process(self, file_path: str):
-        content = read_text_file(file_path)
-        if not content: return
+    def process_file(self, file_path):
+        try:
+            # ফাইলের নাম ছোট হাতের অক্ষরে নিয়ে আসা যাতে সব ক্যাটাগরি ম্যাচ করে
+            filename = os.path.basename(file_path).lower()
+            
+            # আপনার কাঙ্ক্ষিত সেনসিটিভ কি-ওয়ার্ডসমূহ
+            keywords = ["secret", "confidential", "password", "secured", "private"]
+            
+            # যদি ফাইলের নামের মধ্যে উপরের যেকোনো একটি শব্দ থাকে
+            if any(key in filename for key in keywords):
+                alert_msg = f"Security Alert: A confidential file named {filename} has been detected."
+                
+                # টার্মিনালে লাল এলার্ট দেখানো
+                print(f"\n[!] {alert_msg}") 
+                
+                # মেইন জার্ভিসকে (main_test1.2.py) এলার্ট পাঠানো যাতে সে কথা বলে ওঠে
+                if self.callback: 
+                    self.callback(alert_msg)
+        except Exception as e:
+            print(f"Error processing file: {e}")
         
         analysis = analyze_content_with_llama(file_path, content)
         
