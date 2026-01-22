@@ -154,52 +154,15 @@ class FileContentAnalyzerHandler(FileSystemEventHandler):
             self.executor.submit(self._process, file_path)
         except OSError: pass
 
-    def process_file(self, file_path):
-        try:
-            # ফাইলের নাম ছোট হাতের অক্ষরে নিয়ে আসা যাতে সব ক্যাটাগরি ম্যাচ করে
-            filename = os.path.basename(file_path).lower()
-            
-            # আপনার কাঙ্ক্ষিত সেনসিটিভ কি-ওয়ার্ডসমূহ
-            keywords = ["secret", "confidential", "password", "secured", "private"]
-            
-            # যদি ফাইলের নামের মধ্যে উপরের যেকোনো একটি শব্দ থাকে
-            if any(key in filename for key in keywords):
-                alert_msg = f"Security Alert: A confidential file named {filename} has been detected."
-                
-                # টার্মিনালে লাল এলার্ট দেখানো
-                print(f"\n[!] {alert_msg}") 
-                
-                # মেইন জার্ভিসকে (main_test1.2.py) এলার্ট পাঠানো যাতে সে কথা বলে ওঠে
-                if self.callback: 
-                    self.callback(alert_msg)
-        except Exception as e:
-            print(f"Error processing file: {e}")
+    def process_file(file_path, callback):
+        filename = os.path.basename(file_path).lower()
+        keywords = ["secret", "confidential", "password", "secured"]
         
-        analysis = analyze_content_with_llama(file_path, content)
-        
-        # যদি স্কোর ৮০ বা তার বেশি হয়
-        if analysis and analysis.get("sensitivity_score", 0) >= SENSITIVITY_THRESHOLD:
-            file_name = os.path.basename(file_path)
-            
-            # --- ১. প্রথমে ফাইলটি সিকিউর ভল্টে আপলোড করা ---
-            is_secured, vault_loc = secure_data_vault(file_path)
-            
-            vault_msg = ""
-            if is_secured:
-                vault_msg = "File has been encrypted and moved to the secure vault."
-            else:
-                vault_msg = "Warning: Failed to secure the file."
-
-            # --- ২. এলার্ট মেসেজ তৈরি করা ---
-            alert_text = (f"Sir, high threat detected in {file_name}. "
-                          f"{vault_msg} Please check logs immediately.")
-            
-            print(f"\n[ALERT] {alert_text}")
-            print(f"[VAULT] Backup Location: {vault_loc}")
-
-            # --- ৩. জার্ভিসকে দিয়ে বলানো ---
-            if self.voice_callback:
-                self.voice_callback(alert_text)
+        if any(key in filename for key in keywords):
+            # এই মেসেজটিই মেইন লুপে পাঠানো হবে
+            alert_msg = f"THREAT: {filename}" 
+            if callback:
+                callback(alert_msg)
 
 # -------------------
 # Monitoring & Connectivity

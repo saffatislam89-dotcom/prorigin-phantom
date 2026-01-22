@@ -43,6 +43,23 @@ LLM_MODEL = "llama3"
 current_security_status = "System Secure"
 global_voice_engine = None # For background threads to access speech
 
+def security_alert(text):
+    global current_security_status
+    # স্ট্যাটাস আপডেট করা
+    current_security_status = text 
+    print(f"\n[!] ALERT: {text}")
+    
+    # ভয়েস এলার্ট (যদি ইঞ্জিন সচল থাকে)
+    if global_voice_engine:
+        global_voice_engine.speak("Warning! Sensitive file detected.")
+    
+    # ৭ সেকেন্ড পর অটোমেটিক 'System Secure' এ ফিরে যাবে
+    threading.Timer(7.0, lambda: set_status("System Secure")).start()
+
+def set_status(val):
+    global current_security_status
+    current_security_status = val
+
 # -------------------
 # Helpers
 # -------------------
