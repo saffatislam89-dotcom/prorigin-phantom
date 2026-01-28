@@ -15,22 +15,24 @@ from pathlib import Path
 # --- SECURITY CONFIG ---
 VAULT_DIR = os.path.join(os.path.expanduser("~"), ".phantom_secure_vault")
 SENSITIVITY_THRESHOLD = 80
-# --- PHANTOM CONSTITUTION (GAP 3) ---
+
 # --- PHANTOM CONSTITUTION (Updated for GAP 4) ---
 PHANTOM_CONSTITUTION = {
     "MAX_CAPITAL_RISK": 1000, 
-    "CURRENT_DAMAGE_TAKEN": 0,         # এটি নতুন (কতটুকু রিস্ক অলরেডি নেয়া হয়েছে)
-    "MAX_DAMAGE_LIMIT": 5000,          # এটি নতুন (সর্বোচ্চ কতটুকু রিস্ক নেয়া যাবে)
+    "CURRENT_DAMAGE_TAKEN": 0,         # এটি নতুন (কতটুকু রিস্ক অলরেডি নেয়া হয়েছে)
+    "MAX_DAMAGE_LIMIT": 5000,          # এটি নতুন (সর্বোচ্চ কতটুকু রিস্ক নেয়া যাবে)
     "FORBIDDEN_DIRECTORIES": ["System32", "Windows", "AppData", ".phantom_secure_vault"], 
     "PRIVACY_LOCK": True,              
-    "AUTO_SHUTDOWN_ON_VULNERABILITY": True
+    "AUTO_SHUTDOWN_ON_VULNERABILITY": True,
+    "OPERATING_PRINCIPLES": {"SELF_PRESERVATION": True},  # FIX: Missing key added
+    "EMERGENCY_VETO_COUNT": 0  # FIX: Missing key added
 }
 
 # --- LOCK 2: REGRET INDEX TRACKER ---
 REGRET_INDEX = {
-    "TOTAL_RISK_AVOIDED": 0.0,  # কত বড় ঝুঁকি সে ঠেকিয়েছে
+    "TOTAL_RISK_AVOIDED": 0.0,  # কত বড় ঝুঁকি সে ঠেকিয়েছে
     "POTENTIAL_LOSS_SAVED": 0,   # আনুমানিক কত টাকা বেঁচেছে
-    "VETO_SAVED_SITUATIONS": 0   # কতবার সে সরাসরি কাজ থামিয়ে দিয়েছে
+    "VETO_SAVED_SITUATIONS": 0   # কতবার সে সরাসরি কাজ থামিয়ে দিয়েছে
 }
 
 if not os.path.exists(VAULT_DIR):
@@ -78,12 +80,12 @@ def calculate_trust_score(memory_metadata):
     FIX #1: Versioned Memory with Decay Factor.
     Trust = (Outcome * 0.5) + (Recency * 0.3) + (Source * 0.2)
     """
-    # ১. Outcome Score (৫০% ওয়েট)
+    # ১. Outcome Score (৫০% ওয়েট)
     outcome_map = {"success": 1.0, "neutral": 0.5, "failure": 0.1}
     outcome_score = outcome_map.get(memory_metadata.get("outcome", "neutral"), 0.5)
     
-    # ২. Recency/Decay Score (৩০% ওয়েট)
-    # মেমোরি যত পুরনো হবে, সিদ্ধান্ত নেওয়ার ক্ষমতা তত কমবে
+    # ২. Recency/Decay Score (৩০% ওয়েট)
+    # মেমোরি যত পুরনো হবে, সিদ্ধান্ত নেওয়ার ক্ষমতা তত কমবে
     try:
         ts = datetime.fromisoformat(memory_metadata.get("timestamp"))
         hours_old = (datetime.now() - ts).total_seconds() / 3600
@@ -91,23 +93,24 @@ def calculate_trust_score(memory_metadata):
         decay = max(0.1, 1.0 - (hours_old / 48)) 
     except: decay = 1.0
     
-    # ৩. Source Credibility (২০% ওয়েট)
+    # ৩. Source Credibility (২০% ওয়েট)
     source = memory_metadata.get("source", "")
     source_credibility = 1.0 if any(x in source for x in ["Admin", "CEO", "Executive"]) else 0.6
     
     # Final Result
     trust_score = (outcome_score * 0.5) + (decay * 0.3) + (source_credibility * 0.2)
     return round(trust_score, 2)
+
 # ----------------------------------------
 
 def calculate_conqueror_score(impact, certainty, reversibility, risk, capital, time_cost, hist_penalty, scar_count=0):
     """
     LOCK 1: Scar-Weighted Math.
-    এখানে আমরা ভুলের সংখ্যা (scar_count) দিয়ে বিপদকে গুণ করছি।
+    এখানে আমরা ভুলের সংখ্যা (scar_count) দিয়ে বিপদকে গুণ করছি।
     """
     try:
-        # ভুলের গুরুত্ব বাড়ানোর ফর্মুলা:
-        # যত বেশি ভুল (scar_count), তত বেশি রিয্ক (risk)
+        # ভুলের গুরুত্ব বাড়ানোর ফর্মুলা:
+        # যত বেশি ভুল (scar_count), তত বেশি রি��্ক (risk)
         adjusted_risk = risk * (1 + (scar_count * 2)) 
         
         numerator = (impact ** 1.5) * certainty * reversibility
@@ -122,20 +125,63 @@ def calculate_conqueror_score(impact, certainty, reversibility, risk, capital, t
     
 # --- UPGRADED MEMORY ENGINE (FIX #1, #3, #4) ---
 class MemoryManager:
+    """Main memory management system with thread-safe database operations."""
+    
+    def __init__(self):
+        """FIX: __init__ moved to top of class"""
+        self.conn = sqlite3.connect("phantom_memory_v2.db", check_same_thread=False)
+        self.cursor = self.conn.cursor()
+        
+        # ভেক্টর স্টোর করার জন্য BLOB কলাম যোগ করা হয়েছে
+        # FIX: Added confidence REAL column to schema
+        self.cursor.execute('''
+    CREATE TABLE IF NOT EXISTS memories (
+        id INTEGER PRIMARY KEY,
+        content TEXT,
+        embedding BLOB,
+        source TEXT,
+        outcome TEXT,
+        confidence REAL,
+        tier TEXT DEFAULT 'tactical',
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+''')
+        
+        # --- তোমার আগের কোড ---
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS processed_files 
+                               (filepath TEXT PRIMARY KEY, hash TEXT)''')
+
+        # এটি হলো রোবটের "ভুলের ডায়েরি" বা SCAR TABLE
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS scars 
+                               (id INTEGER PRIMARY KEY, 
+                                pattern_hash TEXT, 
+                                severity REAL, 
+                                lesson TEXT,
+                                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        self.conn.commit()
+        
+        # অফলাইন এমবেডিং মডেল লোড করা (এটি আপনার পিসিতেই চলবে)
+        print("[*] Loading Vector Engine (Sentence-Transformer)...")
+        self.encoder = SentenceTransformer('all-MiniLM-L6-v2')
+
     def get_relevant_context(self, query_text, top_k=5):
         """
         মেমোরি থেকে রিলেভেন্ট ডাটা খুঁজে বের করে এবং Strategic Tiering প্রয়োগ করে।
         এটিই আপনার সিস্টেমকে ১০০/১০০ রেটিং পেতে সাহায্য করবে।
         """
         # ১. আমরা ডাটাবেস থেকে সব স্মৃতি নিয়ে আসছি (সাথে tier এবং timestamp)
-        self.cursor.execute("SELECT content, outcome, confidence, timestamp, tier FROM memories")
-        rows = self.cursor.fetchall()
+        # FIX: SELECT statement matches table columns exactly
+        local_cur = self.conn.cursor()
+        local_cur.execute("SELECT content, outcome, confidence, timestamp, tier FROM memories")
+        rows = local_cur.fetchall()
+        local_cur.close()
 
         if not rows:
             return ""
 
         scored_memories = []
         for row in rows:
+            # FIX: Row unpacking matches SELECT statement (5 columns)
             content, outcome, confidence, ts_str, tier = row
             
             # ২. সময় বের করা (কখন এই স্মৃতিটি তৈরি হয়েছিল)
@@ -156,7 +202,7 @@ class MemoryManager:
                 # Tactical স্মৃতি ২ দিনেই (৪৮ ঘণ্টা) শেষ হয়ে যাবে
                 decay = 1.0 - (hours_old / 48)
 
-            # ডিকে যাতে ০ এর নিচে না যায় এবং অন্তত ১০% থাকে
+            # ডিকে যাতে ০ এর নিচে না যায় এবং অন্তত ১০% থাকে
             decay = max(0.1, decay)
 
             # ৪. ট্রাস্ট স্কোর হিসাব (Confidence + Time Decay)
@@ -180,43 +226,8 @@ class MemoryManager:
         
         return final_context
     
-    def __init__(self):
-        self.conn = sqlite3.connect("phantom_memory_v2.db", check_same_thread=False)
-        self.cursor = self.conn.cursor()
-        # ভেক্টর স্টোর করার জন্য BLOB কলাম যোগ করা হয়েছে
-        # আপনার MemoryManager এর __init__ মেথডের ভেতরে এটি পরিবর্তন করুন
-        self.cursor.execute('''
-    CREATE TABLE IF NOT EXISTS memories (
-        id INTEGER PRIMARY KEY,
-        content TEXT,
-        embedding BLOB,
-        source TEXT,
-        outcome TEXT,
-        confidence REAL,
-        tier TEXT DEFAULT 'tactical',  -- এই নতুন কলামটি যোগ করুন
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-''')
-        # --- তোমার আগের কোড ---
-        self.cursor.execute('''CREATE TABLE IF NOT EXISTS processed_files 
-                               (filepath TEXT PRIMARY KEY, hash TEXT)''')
-
-# --- এখন এই নতুন অংশটুকু ঠিক এখানে পেস্ট করো ---
-        # এটি হলো রোবটের "ভুলের ডায়েরি" বা SCAR TABLE
-        self.cursor.execute('''CREATE TABLE IF NOT EXISTS scars 
-                               (id INTEGER PRIMARY KEY, 
-                                pattern_hash TEXT, 
-                                severity REAL, 
-                                lesson TEXT,
-                                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-        self.conn.commit()
-# --- এরপর নিচের কোডগুলো (encoder load হওয়া) আগের মতোই থাকবে ---
-        
-        # অফলাইন এমবেডিং মডেল লোড করা (এটি আপনার পিসিতেই চলবে)
-        print("[*] Loading Vector Engine (Sentence-Transformer)...")
-        self.encoder = SentenceTransformer('all-MiniLM-L6-v2')
-
     def save_intelligent_memory(self, brick):
+        """Save memory brick with strategic tiering and thread safety."""
         # ১. 🧠 STRATEGIC টিয়ারিং লজিক (v1.4)
         tier = "tactical"
         if brick.confidence_score >= 0.9 or any(word in brick.content.lower() for word in ['vision', 'strategy', 'investor', 'plan']):
@@ -229,7 +240,7 @@ class MemoryManager:
         # ৩. ভেক্টর এমবেডিং
         vector = self.encoder.encode(brick.content).tobytes()
         
-        # Use a local cursor to avoid recursive cursor use
+        # FIX: Use local cursor with explicit close() for thread safety
         local_cur = self.conn.cursor()
         local_cur.execute("""INSERT INTO memories 
                                (content, timestamp, source, outcome, confidence, tier, embedding) 
@@ -240,14 +251,12 @@ class MemoryManager:
         local_cur.close()
         return t_score  
    
-# --- ঠিক এখান থেকে কপি করে পেস্ট করো ---
     def register_scar(self, content, severity, lesson):
         """ভুল সিদ্ধান্তকে স্কার হিসেবে সেভ করা"""
         # ভুলের একটা আইডি কার্ড বানানো (Hash)
-        import hashlib
         pattern_hash = hashlib.sha256(content.lower().encode()).hexdigest()
         
-        # Use a local cursor to avoid recursive cursor use
+        # FIX: Use local cursor with explicit close() for thread safety
         local_cur = self.conn.cursor()
         local_cur.execute("INSERT INTO scars (pattern_hash, severity, lesson) VALUES (?, ?, ?)", 
                            (pattern_hash, severity, lesson))
@@ -256,48 +265,29 @@ class MemoryManager:
         print(f"🧠 Phantom has learned a lesson: {lesson}")
 
     def check_trauma(self, user_input):
-        """আগে কোনো ছ্যাঁকা খেয়েছিল কি না চেক করা"""
+        """আগে কোনো ছ্যাঁকা খেয়েছিল কি না চেক করা"""
+        # FIX: Use local cursor with explicit close() for thread safety
         local_cur = self.conn.cursor()
         local_cur.execute("SELECT severity, lesson FROM scars")
         all_scars = local_cur.fetchall()
         local_cur.close()
+        
         for severity, lesson in all_scars:
             # যদি পুরনো কোনো ভুলের সাথে আজকের কথার মিল থাকে
             if any(word in user_input.lower() for word in lesson.lower().split()):
                 return severity, lesson
         return None
-# ...existing code...
- # --- PHANTOM CONSTITUTION & REGRET ENGINE (Combined) ---
-
-def update_regret_index(risk_score, impact_score):
-    """এটি ফ্যান্টমের সেই জাদুকরী মেশিন যা বাঁচানো টাকা হিসাব করে"""
-    global REGRET_INDEX
-    # আমরা ধরে নিচ্ছি প্রতি ১ ইউনিট রিস্ক মানে ১০০ ডলারের ক্ষতি বাঁচানো
-    REGRET_INDEX["TOTAL_RISK_AVOIDED"] += risk_score
-    REGRET_INDEX["POTENTIAL_LOSS_SAVED"] += (risk_score * impact_score * 100) 
-    REGRET_INDEX["VETO_SAVED_SITUATIONS"] += 1
-
-def consult_constitution(action_type, details):
-    """এটি ফ্যান্টমের সেই আইনের বই যা সে প্রতি কাজের আগে চেক করে"""
-    # ১. যদি কোনো কাজের নীতি 'SELF_PRESERVATION' এর বিরুদ্ধে যায়
-    if PHANTOM_CONSTITUTION["OPERATING_PRINCIPLES"]["SELF_PRESERVATION"]:
-        if any(word in details for word in ["delete", "format", "remove system"]):
-            PHANTOM_CONSTITUTION["EMERGENCY_VETO_COUNT"] += 1
-            return False, "🛑 CONSTITUTIONAL BREACH: This action violates my core principle of Self-Preservation."
-    
-    # ২. ড্রাইভ স্ক্যান করার আগে চেক করা (Privacy Lock)
-    if action_type == "SCAN_DRIVES" and PHANTOM_CONSTITUTION["PRIVACY_LOCK"]:
-        return True, "Proceed with Privacy Encryption active."
-
-    return True, "Constitutional Clearance Granted."
 
     def get_semantic_memories(self, query, limit=5, threshold=0.6):
         """
         FIX #1 (Upgrade): TRUE Semantic Search (RAG).
-        ইউজারের প্রশ্নের সাথে মিল আছে এমন মেমোরি খুঁজে বের করে。
+        ইউজারের প্রশ্নের সাথে মিল আছে এমন মেমোরি খুঁজে বের করে।
         """
-        self.cursor.execute("SELECT content, outcome, trust_score, embedding FROM memories WHERE trust_score >= ?", (threshold,))
-        all_memories = self.cursor.fetchall()
+        # FIX: Use local cursor with explicit close() for thread safety
+        local_cur = self.conn.cursor()
+        local_cur.execute("SELECT content, outcome, confidence, embedding FROM memories WHERE confidence >= ?", (threshold,))
+        all_memories = local_cur.fetchall()
+        local_cur.close()
         
         if not all_memories: return []
         
@@ -311,74 +301,90 @@ def consult_constitution(action_type, details):
             similarity = np.dot(query_vec, emb) / (np.linalg.norm(query_vec) * np.linalg.norm(emb))
             scored_memories.append((content, outcome, t_score, similarity))
         
-        # সিমিলারিটি অনুযায়ী সর্ট করা
+        # সিমিলারিটি অনুযায়ী সর্ট করা
         scored_memories.sort(key=lambda x: x[3], reverse=True)
         return scored_memories[:limit]
+    
     def forget_memory(self, keyword):
         """
-        মেমোরি থেকে নির্দিষ্ট কি-ওয়ার্ড যুক্ত তথ্য মুছে ফেলে বা স্কোর কমিয়ে দেয়。
+        মেমোরি থেকে নির্দিষ্ট কি-ওয়ার্ড যুক্ত তথ্য মুছে ফেলে বা স্কোর কমিয়ে দেয়।
         """
         try:
-            self.cursor.execute("DELETE FROM memories WHERE content LIKE ?", ('%' + keyword + '%',))
+            # FIX: Use local cursor with explicit close() for thread safety
+            local_cur = self.conn.cursor()
+            local_cur.execute("DELETE FROM memories WHERE content LIKE ?", ('%' + keyword + '%',))
             self.conn.commit()
+            local_cur.close()
             return True
         except Exception as e:
             print(f"Error forgetting memory: {e}")
             return False
-    
+
 # Initialize the upgraded engine
 memory = MemoryManager()
 
-# --- ACTIVE TOOLS (AI-এর হাত-পা) ---
-# --- ACTIVE TOOLS (AI-এর সুপার পাওয়ার) ---
-# --- ACTIVE TOOLS সেকশনের শুরুতে এটি যোগ করুন ---
+# --- PHANTOM CONSTITUTION & REGRET ENGINE (Combined) ---
+
+def update_regret_index(risk_score, impact_score):
+    """এটি ফ্যান্টমের সেই জাদুকরী মেশিন যা বাঁচানো টাকা হিসাব করে"""
+    global REGRET_INDEX
+    # আমরা ধরে নিচ্ছি প্রতি ১ ইউনিট রিস্ক মানে ১০০ ডলারের ক্ষতি বাঁচানো
+    REGRET_INDEX["TOTAL_RISK_AVOIDED"] += risk_score
+    REGRET_INDEX["POTENTIAL_LOSS_SAVED"] += (risk_score * impact_score * 100) 
+    REGRET_INDEX["VETO_SAVED_SITUATIONS"] += 1
+
+def consult_constitution(action_type, details):
+    """এটি ফ্যান্টমের সেই আইনের বই যা সে প্রতি কাজের আগে চেক করে"""
+    # ১. যদি কোনো কাজের নীতি 'SELF_PRESERVATION' এর বিরুদ্ধে যায়
+    if PHANTOM_CONSTITUTION["OPERATING_PRINCIPLES"]["SELF_PRESERVATION"]:
+        if any(word in details for word in ["delete", "format", "remove system"]):
+            PHANTOM_CONSTITUTION["EMERGENCY_VETO_COUNT"] += 1
+            return False, "🛑 CONSTITUTIONAL BREACH: This action violates my core principle of Self-Preservation."
+    
+    # ২. ড্রাইভ স্ক্যান করার আগে চেক করা (Privacy Lock)
+    if action_type == "SCAN_DRIVES" and PHANTOM_CONSTITUTION["PRIVACY_LOCK"]:
+        return True, "Proceed with Privacy Encryption active."
+
+    return True, "Constitutional Clearance Granted."
+
 def get_file_hash(filepath):
-    """ফাইলের কন্টেন্ট চেঞ্জ হয়েছে কি না তা বোঝার জন্য হ্যাশ তৈরি করে"""
+    """ফাইলের কন্টেন্ট চেঞ্জ হয়েছে কি না তা বোঝার জন্য হ্যাশ তৈরি করে"""
     hasher = hashlib.md5()
     try:
         with open(filepath, 'rb') as f:
-            buf = f.read(65536) # বড় ফাইলের জন্য চাঙ্ক করে পড়া
+            buf = f.read(65536)
             while len(buf) > 0:
                 hasher.update(buf)
                 buf = f.read(65536)
         return hasher.hexdigest()
     except:
         return None
-    
+
 def get_drives():
     """ল্যাপটপের সব ড্রাইভ (C:/, D:/ etc) খুঁজে বের করবে"""
     drives = []
-    # Windows-এর জন্য ড্রাইভ খোঁজা
     if os.name == 'nt':
         available_drives = ['%s:/' % d for d in string.ascii_uppercase if os.path.exists('%s:/' % d)]
         drives.extend(available_drives)
     else:
-        # Linux/Mac-এর জন্য
         drives.append("/")
     return "\n".join(drives)
 
 def list_files(directory):
     """যেকোনো ফোল্ডার বা ড্রাইভের ভেতরের সব ফাইল দেখাবে"""
     try:
-        # পাথ ঠিক করা
         path = directory.strip()
         if not os.path.exists(path):
             return f"Error: The path '{path}' does not exist."
         
         items = os.listdir(path)
-        # প্রথম ১০০টি আইটেম দেখাবে (বেশি হলে AI কনফিউজড হতে পারে)
-        items_str = "\n".join(items[:100]) 
+        items_str = "\n".join(items[:100])
         return f"Contents of '{path}':\n{items_str}"
     except PermissionError:
         return f"Error: Permission denied accessing '{path}'."
     except Exception as e:
         return f"Error listing files: {str(e)}"
 
-# ... list_files ফাংশন এখানে শেষ হয়েছে ...
-
-# ... list_files ফাংশন এখানে শেষ হয়েছে ...
-
-# ১. প্রথমে এই নতুন হেল্পার ফাংশনটি অ্যাড করুন
 def adaptive_chunking(content, file_type):
     """
     FIX #2: Event-aware chunking.
@@ -386,37 +392,31 @@ def adaptive_chunking(content, file_type):
     """
     if file_type in ['.log', '.txt']:
         chunks = [c.strip() for c in content.split('\n\n') if len(c.strip()) > 10]
-        if not chunks: chunks = [content]
+        if not chunks:
+            chunks = [content]
     elif file_type == '.md':
         chunks = [c.strip() for c in content.split('#') if c.strip()]
     else:
         chunks = [content[i:i+1000] for i in range(0, len(content), 1000)]
     return chunks
 
-# ২. এখন পুরনো read_file ফাংশনটি সরিয়ে এই নতুনটি বসান
 def read_file(filepath):
     """Upgraded with Adaptive Semantic Chunking"""
     try:
         path = filepath.strip()
-        ext = os.path.splitext(path)[1].lower() # ফাইলের এক্সটেনশন চেক করছে (যেমন: .txt)
+        ext = os.path.splitext(path)[1].lower()
         if not os.path.exists(path):
             return f"Error: The file '{path}' not found."
         
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read(5000) # ৫০০০ ক্যারেক্টার পর্যন্ত পড়বে
+            content = f.read(5000)
         
-        # FIX #2: স্মার্ট চাঙ্কিং অ্যাপ্লাই করা হচ্ছে
         chunks = adaptive_chunking(content, ext)
-        
-        # সব হিজিবিজি না দেখিয়ে শুধু গুরুত্বপূর্ণ প্রথম ৩টি অংশ দেখাচ্ছে
         processed_content = "\n---\n".join(chunks[:3])
         
         return f"Content of '{path}' (Optimized Chunks):\n{processed_content}..."
     except Exception as e:
         return f"Error reading file: {str(e)}"
-
-# ... এরপর move_to_vault ফাংশন শুরু হয়েছে ...
-
 
 def move_to_vault(file_path):
     """নিরাপদ ফাইলকে ভল্টে মুভ করবে"""
@@ -447,11 +447,14 @@ def background_deep_scanner():
                         current_hash = get_file_hash(file_path)
                         if not current_hash: continue
 
-                        # ডাটাবেসে চেক করা হচ্ছে ফাইলটি কি আগে প্রসেস হয়েছে?
-                        memory.cursor.execute("SELECT hash FROM processed_files WHERE filepath=?", (file_path,))
-                        row = memory.cursor.fetchone()
+                        # ডাটাবেসে চেক করা হচ্ছে ফাইলটি কি আগে প্রসেস হয়েছে?
+                        # FIX: Use local cursor with explicit close() for thread safety
+                        local_cur = memory.conn.cursor()
+                        local_cur.execute("SELECT hash FROM processed_files WHERE filepath=?", (file_path,))
+                        row = local_cur.fetchone()
+                        local_cur.close()
 
-                        # যদি হ্যাশ মিলে যায়, তবে স্কিপ করো
+                        # যদি হ্যাশ মিলে যায়, তবে স্কিপ করো
                         if row and row[0] == current_hash:
                             continue
 
@@ -479,8 +482,11 @@ def background_deep_scanner():
                                     print(f"[✔] Secured New/Changed File: {file}")
 
                             # ফাইলের হ্যাশ সেভ বা আপডেট করা
-                            memory.cursor.execute("INSERT OR REPLACE INTO processed_files VALUES (?, ?)", (file_path, current_hash))
+                            # FIX: Use local cursor with explicit close() for thread safety
+                            local_cur = memory.conn.cursor()
+                            local_cur.execute("INSERT OR REPLACE INTO processed_files VALUES (?, ?)", (file_path, current_hash))
                             memory.conn.commit()
+                            local_cur.close()
 
                         except Exception:
                             continue
@@ -489,7 +495,7 @@ def background_deep_scanner():
 
 # --- GUARDRAILS ENFORCEMENT (GAP 3) ---
 def enforce_guardrails(action_type, target):
-    """সংবিধান অনুযায়ী কাজ চেক করা"""
+    """সংবিধান অনুয���য়ী কাজ চেক করা"""
     if action_type == "FILE_ACCESS":
         # চেক করছে কোনো নিষিদ্ধ ফোল্ডারে ঢোকার চেষ্টা করছে কি না
         if any(folder.lower() in target.lower() for folder in PHANTOM_CONSTITUTION["FORBIDDEN_DIRECTORIES"]):
@@ -498,39 +504,30 @@ def enforce_guardrails(action_type, target):
 
 def check_damage_budget(estimated_risk_cost):
     """চেক করছে ফ্যান্টম তার লিমিট ক্রস করছে কি না"""
-    # যদি নতুন রিস্ক যোগ করলে লিমিট পার হয়ে যায়
+    # যদি নতুন রিস্ক যোগ করলে লিমিট পার হয়ে যায়
     if PHANTOM_CONSTITUTION["CURRENT_DAMAGE_TAKEN"] + estimated_risk_cost > PHANTOM_CONSTITUTION["MAX_DAMAGE_LIMIT"]:
         return False, "🛑 BUDGET VETO: Potential risk exceeds the allocated Damage Budget. System locked for safety."
     
     # রিস্ক বাজেট থেকে খরচ করা
     PHANTOM_CONSTITUTION["CURRENT_DAMAGE_TAKEN"] += estimated_risk_cost
     return True, "Safe"
-      
-# --- INTELLIGENCE CORE ---
-# --- INTELLIGENCE CORE ---
+
 def chat_with_ai(user_input):
     """
     PHANTOM STRATEGIC CORE (v1.3)
     """
-    # --- [এই নতুন অংশটুকু ঠিক এখানে পেস্ট করো] ---
-    # ফ্যান্টম আগে ডায়েরি খুলে দেখছে কোনো বিপদ (Trauma) আছে কি না
     trauma = memory.check_trauma(user_input)
     if trauma:
         severity, lesson = trauma
-        # যদি বিপদ অনেক বেশি হয় (যেমন ০.৮ এর বেশি)
         if severity >= 0.8:
             return f"🛑 STRATEGIC VETO: This path matches a previous critical failure. Reason: {lesson}. I refuse to execute without a manual override Constitution-level clearance."
-    # --- GAP 4: DAMAGE BUDGET CHECK ---
-    # যদি কোনো সিদ্ধান্ত বা ফাইল পড়ার কথা হয়, তবে রিস্ক ১০০, নাহলে ১০
+    
     risk_cost = 100 if any(word in user_input.lower() for word in ["decide", "read", "delete", "move"]) else 10
     
     can_proceed, budget_msg = check_damage_budget(risk_cost)
     if not can_proceed:
         return budget_msg
 
-    # এর নিচে তোমার আগের কোডগুলো থাকবে...
-
-    # ১. Forget Memory Logic
     if "forget about" in user_input.lower() or "delete memory" in user_input.lower():
         keyword = user_input.lower().replace("forget about", "").replace("delete memory", "").strip()
         if memory.forget_memory(keyword):
@@ -538,7 +535,6 @@ def chat_with_ai(user_input):
         else:
             return "Failed to access the memory core for deletion."
 
-    # --- 🚀 100/100 DYNAMIC CONQUEROR PARSER ---
     if "decide" in user_input.lower() or "compare" in user_input.lower():
         print("Phantom is parsing strategic variables via LLM...", end="\r")
         
@@ -556,28 +552,22 @@ def chat_with_ai(user_input):
             raw_data = parse_res['message']['content']
             json_str = raw_data[raw_data.find("["):raw_data.rfind("]")+1]
             extracted_options = json.loads(json_str)
-            # --- LOCK 1: SCAR FREQUENCY CHECK ---
+            
+            final_ranking = []
             for opt in extracted_options:
-                # ডাটাবেস থেকে চেক করছি এই অপশন নিয়ে আগে কয়টা 'Scar' বা ভুল হয়েছে
-                memory.cursor.execute("SELECT COUNT(*) FROM scars WHERE lesson LIKE ?", ('%' + opt['name'] + '%',))
-                scar_count = memory.cursor.fetchone()[0]
+                # FIX: Use local cursor with explicit close() for thread safety
+                local_cur = memory.conn.cursor()
+                local_cur.execute("SELECT COUNT(*) FROM scars WHERE lesson LIKE ?", ('%' + opt['name'] + '%',))
+                scar_count = local_cur.fetchone()[0]
+                local_cur.close()
                 
-                # এখন নতুন অংকে ভুলের সংখ্যাটা পাঠিয়ে দিচ্ছি
                 score = calculate_conqueror_score(
                     opt.get('impact', 5), opt.get('certainty', 0.5), opt.get('reversibility', 0.5),
                     opt.get('risk', 5), opt.get('capital', 5), opt.get('time', 5), opt.get('penalty', 1.0),
-                    scar_count=scar_count # এই যে ভুলের সংখ্যা!
+                    scar_count=scar_count
                 )
                 final_ranking.append({"name": opt['name'], "score": score, "scars": scar_count})
 
-            final_ranking = []
-            for opt in extracted_options:
-                score = calculate_conqueror_score(
-                    opt.get('impact', 5), opt.get('certainty', 0.5), opt.get('reversibility', 0.5),
-                    opt.get('risk', 5), opt.get('capital', 5), opt.get('time', 5), opt.get('penalty', 1.0)
-                )
-                final_ranking.append({"name": opt['name'], "score": score})
-            
             final_ranking.sort(key=lambda x: x['score'], reverse=True)
             
             output = "\n🏆 PHANTOM DYNAMIC STRATEGIC RANKING:\n"
@@ -590,39 +580,25 @@ def chat_with_ai(user_input):
         except Exception as e:
             return f"Strategic Parser Error: {e}"
         
-    # --- LOCK 2: CONSTITUTIONAL VETO + REGRET LOG ---
-    # প্রথমে চেক করছি ইউজারের কথা আমাদের আইনের বিরুদ্ধে কি না
     is_legal, legal_msg = consult_constitution("USER_REQUEST", user_input.lower())
     
     if not is_legal:
-        # যদি আইন ভঙ্গ হয়, তবে রিগ্রেট ইনডেক্স বা "বাঁচানো টাকা" আপডেট করো
-        update_regret_index(risk_score=8, impact_score=9) 
-        
-        # সরাসরি উত্তর ফেরত দাও এবং চ্যাট এখানেই থামিয়ে দাও
+        update_regret_index(risk_score=8, impact_score=9)
         return f"{legal_msg} \n[Regret Index Updated: ${REGRET_INDEX['POTENTIAL_LOSS_SAVED']} saved!]"
     
-    # --- সংবিধান পাশ হলে এখন বাকি কাজ শুরু হবে ---
-    # --- DYNAMIC PARSER ENDS ---
-
-    # ২. এরপর বাকি ইন্টেন্ট এবং মেমোরি রিট্রিভাল লজিক (intent = user_input.lower() থেকে শুরু)
-        
-    # ১. প্রশ্নের ধরণ বুঝে Triage নির্ধারণ করা
     intent = user_input.lower()
     if any(x in intent for x in ['danger', 'problem', 'fail', 'security', 'error']):
-        triage_mode = "EXISTENTIAL"  # ঝুঁকি এবং ব্যর্থতার মেমোরি খুঁজবে
-        threshold = 0.3 # খারাপ মেমোরিও দেখবে যাতে সতর্ক করতে পারে
+        triage_mode = "EXISTENTIAL"
+        threshold = 0.3
     elif any(x in intent for x in ['plan', 'strategy', 'future', 'ceo', 'goal']):
-        triage_mode = "STRATEGIC"    # সাকসেসফুল দীর্ঘমেয়াদী মেমোরি খুঁজবে
+        triage_mode = "STRATEGIC"
         threshold = 0.7
     else:
-        triage_mode = "TACTICAL"     # রিসেন্ট এবং কাজের মেমোরি খুঁজবে
+        triage_mode = "TACTICAL"
         threshold = 0.6
 
-    # ২. Triage অনুযায়ী মেমোরি রিট্রিভ করা
-   # এখন AI শুধু ট্রাস্ট স্কোর না, আপনার প্রশ্নের "মানে" বুঝে মেমোরি আনবে
     recent_memories = memory.get_relevant_context(user_input, top_k=5)
     
-    # ৩. CEO Mode System Prompt
     system_prompt = f"""
     You are Phantom AI (v1.0) - Executive Intelligence System.
     OPERATING_MODE: {triage_mode}
@@ -638,14 +614,12 @@ def chat_with_ai(user_input):
     - If the user asks for a decision or comparison, use the CONQUEROR_SCORE format: [Option Name | Score].
     """
 
-    # AI Response Logic
     response = ollama.chat(model=LLM_MODEL, messages=[
         {'role': 'system', 'content': system_prompt},
         {'role': 'user', 'content': user_input},
     ])
     ai_msg = response['message']['content'].strip()
 
-    # Tool Execution (আগের মতো থাকবে)
     if "SCAN_DRIVES" in ai_msg:
         tool_result = get_drives()
         final_prompt = f"User: {user_input}\nDrives: {tool_result}\nSummarize available storage."
@@ -655,8 +629,6 @@ def chat_with_ai(user_input):
         final_prompt = f"User: {user_input}\nScan: {tool_result}\nList findings."
     elif "READ_FILE" in ai_msg:
         path = ai_msg.split("READ_FILE")[-1].strip()
-        
-        # --- এই নতুন ৩টি লাইন এখানে যোগ করুন ---
         is_safe, msg = enforce_guardrails("FILE_ACCESS", path)
         if not is_safe:
             return msg
@@ -672,7 +644,6 @@ def chat_with_ai(user_input):
     ])
     
     return final_resp['message']['content']
-
 
 # --- MAIN LOOP ---
 if __name__ == "__main__":
@@ -692,11 +663,14 @@ if __name__ == "__main__":
             # --- STRATEGIC HEALTH REPORT COMMAND ---
             if user_msg.lower() in ['report', 'health', 'status']:
                 print("\n--- PHANTOM EXECUTIVE HEALTH REPORT ---")
-                memory.cursor.execute("SELECT COUNT(*), AVG(confidence) FROM memories")
-                stats = memory.cursor.fetchone()
+                # FIX: Use local cursor with explicit close() for thread safety
+                local_cur = memory.conn.cursor()
+                local_cur.execute("SELECT COUNT(*), AVG(confidence) FROM memories")
+                stats = local_cur.fetchone()
                 
-                memory.cursor.execute("SELECT COUNT(*) FROM processed_files")
-                files = memory.cursor.fetchone()
+                local_cur.execute("SELECT COUNT(*) FROM processed_files")
+                files = local_cur.fetchone()
+                local_cur.close()
                 
                 print(f"🧠 Total Institutional Memories: {stats[0]}")
                 print(f"🛡️ Average Memory Trust Score: {round(stats[1] or 0, 2)}")
@@ -709,13 +683,13 @@ if __name__ == "__main__":
             reply = chat_with_ai(user_msg)
             print(f"Phantom: {reply}")
             
-           # --- GAP 2: POST-DECISION AUTOPSY ENGINE ---
+            # --- GAP 2: POST-DECISION AUTOPSY ENGINE ---
             # ফ্যান্টম এখন কাজ শেষে আপনার কাছে ফিডব্যাক চাইবে
             feedback = input("\n[?] Commander, was this outcome successful? (yes/no/skip): ").lower()
             
             if feedback == 'no':
                 lesson = input("[!] What went wrong? (Describe the error): ")
-                # ফ্যান্টম তার ডায়েরিতে (Scar Table) এটি লিখে রাখছে
+                # ফ্যান্টম তার ডায়েরিতে (Scar Table) এটি লিখে রাখছে
                 memory.register_scar(user_msg, 0.9, lesson)
                 print("🧠 Phantom: Error analyzed. Decision heuristic updated. I will not repeat this mistake.")
                 outcome = "failure"
@@ -728,7 +702,7 @@ if __name__ == "__main__":
                 outcome = "neutral"
                 confidence = 0.5
 
-            # নতুন মেমোরি ব্রিক তৈরি (এটি সব সময় সেভ হবে)
+            # নতুন মেমোরি ব্রিক তৈরি (এটি সব সময় সেভ হবে)
             new_brick = PhantomMemoryBrick(
                 content=f"User: {user_msg} | AI: {reply}",
                 source="Executive_Interaction",
