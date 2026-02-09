@@ -1,0 +1,284 @@
+import logging
+from transformers import logging as transformers_logging
+import warnings
+warnings.filterwarnings("ignore", message=".*embeddings.position_ids.*")
+from sentence_transformers import SentenceTransformer
+import numpy as np
+import os
+import threading
+import time
+import sqlite3
+import ollama
+import string
+from datetime import datetime
+import shutil
+import hashlib
+import uuid
+from pathlib import Path
+import json
+
+# -- SECURITY CONFIG ---
+VAULT_DIR = os.path.join(os.path.expanduser("~"), ".phantom_secure_vault")
+SENSITIVITY_THRESHOLD = 80
+
+if not os.path.exists(VAULT_DIR):
+    os.makedirs(VAULT_DIR)
+    if os.name == 'nt': 
+        os.system(f'attrib +h "{VAULT_DIR}"')
+
+# -- CONFIGURATION ---
+LLM_MODEL = "llama3"
+DEFAULT_PATH = os.path.expanduser("~")
+
+# -- PHANTOM CORE INTELLIGENCE ---
+class PhantomMemoryBrick:
+    def __init__(self, content, source, decision_outcome="neutral", confidence_score=0.5):
+        self.id = str(uuid.uuid4())
+        self.content = content
+        self.timestamp = datetime.now().isoformat()
+        self.source = source
+        self.decision_outcome = decision_outcome
+        self.confidence_score = confidence_score
+        self.decay_factor = 1.0
+       
+    def to_metadata(self):
+        return {
+            "id": self.id,
+            "source": self.source,
+            "timestamp": self.timestamp,
+            "outcome": self.decision_outcome,
+            "confidence": self.confidence_score
+        }
+
+def calculate_trust_score(memory_metadata):
+    outcome_map = {"success": 1.0, "neutral": 0.5, "failure": 0.1}
+    outcome_score = outcome_map.get(memory_metadata.get("outcome", "neutral"), 0.5)
+    
+    try:
+        ts = datetime.fromisoformat(memory_metadata.get("timestamp"))
+        hours_old = (datetime.now() - ts).total_seconds() / 3600
+        decay = max(0.1, 1.0 - (hours_old / 48))
+    except: 
+        decay = 1.0
+   
+    source = memory_metadata.get("source", "")
+    source_credibility = 1.0 if any(x in source for x in ["Admin", "CEO", "Executive"]) else 0.6
+   
+    trust_score = (outcome_score * 0.5) + (decay * 0.3) + (source_credibility * 0.2)
+    return round(trust_score, 2)
+
+def calculate_conqueror_score(impact, certainty, reversibility, risk, capital, time_cost, hist_penalty):
+    try:
+        numerator = (impact ** 1.5) * certainty * reversibility
+        denominator = risk * capital * time_cost * hist_penalty
+        if denominator == 0: return 0
+        score = numerator / denominator
+        return round(score, 2)
+    except Exception:
+        return 0
+
+# -- UPGRADED MEMORY ENGINE ---
+class MemoryManager:
+    def __init__(self):
+        db_path = os.path.join(VAULT_DIR, "phantom_memory_v2.db")
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.cursor = self.conn.cursor()
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                content TEXT,
+                embedding BLOB,
+                source TEXT,
+                outcome TEXT,
+                confidence REAL,
+                trust_score REAL,
+                tier TEXT DEFAULT 'tactical',
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )''')
+        
+        # কলাম চেক এবং যোগ করা (tier কলাম এরর ফিক্স)
+        try:
+            self.cursor.execute("ALTER TABLE memories ADD COLUMN tier TEXT DEFAULT 'tactical'")
+        except: pass
+
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS processed_files
+                               (filepath TEXT PRIMARY KEY, hash TEXT)''')
+        self.conn.commit()
+        print("[*] Loading Vector Engine (Sentence-Transformer)...")
+        self.encoder = SentenceTransformer('all-MiniLM-L6-v2')
+
+    def get_relevant_context(self, query_text, top_k=5):
+        self.cursor.execute("SELECT content, outcome, confidence, timestamp, tier FROM memories")
+        rows = self.cursor.fetchall()
+        if not rows: return ""
+
+        scored_memories = []
+        for row in rows:
+            content, outcome, confidence, ts_str, tier = row
+            try:
+                ts = datetime.fromisoformat(ts_str) if 'T' in ts_str else datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+            except:
+                ts = datetime.now()
+            
+            hours_old = (datetime.now() - ts).total_seconds() / 3600
+            decay = 1.0 - (hours_old / 720) if tier == "strategic" else 1.0 - (hours_old / 48)
+            decay = max(0.1, decay)
+            trust_score = (confidence * 0.7) + (decay * 0.3)
+            
+            scored_memories.append({"content": content, "trust": trust_score, "tier": tier})
+
+        scored_memories.sort(key=lambda x: x["trust"], reverse=True)
+        return "\n".join([f"[{m['tier'].upper()} MEMORY - Trust: {m['trust']:.2f}] {m['content']}" for m in scored_memories[:top_k]])
+
+    def save_intelligent_memory(self, brick):
+        tier = "strategic" if brick.confidence_score >= 0.9 or any(word in brick.content.lower() for word in ['vision', 'strategy', 'investor', 'plan']) else "tactical"
+        metadata = brick.to_metadata()
+        t_score = calculate_trust_score(metadata)
+        vector = self.encoder.encode(brick.content).tobytes()
+        
+        self.cursor.execute("""INSERT INTO memories 
+                               (id, content, timestamp, source, outcome, confidence, trust_score, tier, embedding)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (brick.id, brick.content, brick.timestamp, brick.source,
+                             brick.decision_outcome, brick.confidence_score, t_score, tier, vector))
+        self.conn.commit()
+        return t_score
+
+    def forget_memory(self, keyword):
+        try:
+            self.cursor.execute("DELETE FROM memories WHERE content LIKE ?", ('%' + keyword + '%',))
+            self.conn.commit()
+            return True
+        except: return False
+
+# -- ACTIVE TOOLS ---
+def get_file_hash(filepath):
+    hasher = hashlib.md5()
+    try:
+        with open(filepath, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except: return None
+
+def get_drives():
+    if os.name == 'nt':
+        return "\n".join(['%s:/' % d for d in string.ascii_uppercase if os.path.exists('%s:/' % d)])
+    return "/"
+
+def list_files(directory):
+    try:
+        path = directory.strip()
+        items = os.listdir(path)
+        return f"Contents of '{path}':\n" + "\n".join(items[:100])
+    except Exception as e: return str(e)
+
+def adaptive_chunking(content, file_type):
+    if file_type in ['.log', '.txt']:
+        return [c.strip() for c in content.split('\n\n') if len(c.strip()) > 10] or [content]
+    return [content[i:i+1000] for i in range(0, len(content), 1000)]
+
+def read_file(filepath):
+    try:
+        path = filepath.strip()
+        ext = os.path.splitext(path)[1].lower()
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read(5000)
+        chunks = adaptive_chunking(content, ext)
+        return f"Content of '{path}':\n" + "\n---\n".join(chunks[:3])
+    except Exception as e: return str(e)
+
+def move_to_vault(file_path):
+    try:
+        vault_file = os.path.join(VAULT_DIR, os.path.basename(file_path))
+        shutil.move(file_path, vault_file)
+        return vault_file
+    except: return None
+
+# -- MONITOR & CHAT ---
+memory = MemoryManager()
+
+def background_deep_scanner():
+    drives = [d for d in get_drives().split("\n")]
+    while True:
+        for drive in drives:
+            for root, _, files in os.walk(drive):
+                if any(x in root for x in ['Windows', 'Program Files', 'AppData']): continue
+                for file in files:
+                    if file.lower().endswith(('.txt', '.docx', '.pdf', '.log', '.md')):
+                        file_path = os.path.join(root, file)
+                        h = get_file_hash(file_path)
+                        memory.cursor.execute("SELECT hash FROM processed_files WHERE filepath=?", (file_path,))
+                        if (row := memory.cursor.fetchone()) and row[0] == h: continue
+                        
+                        # Simple score logic for background scan
+                        try:
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                snippet = f.read(500)
+                            p = f"Score confidential (0-100) return only number: {snippet}"
+                            res = ollama.chat(model=LLM_MODEL, messages=[{'role': 'user', 'content': p}])
+                            score = int(''.join(filter(str.isdigit, res['message']['content'])) or 0)
+                            
+                            if score >= SENSITIVITY_THRESHOLD:
+                                if move_to_vault(file_path):
+                                    memory.save_intelligent_memory(PhantomMemoryBrick(f"Secured: {file}", "System", "success", 1.0))
+                            
+                            memory.cursor.execute("INSERT OR REPLACE INTO processed_files VALUES (?, ?)", (file_path, h))
+                            memory.conn.commit()
+                        except: continue
+        time.sleep(3600)
+
+def chat_with_ai(user_input):
+    if "forget about" in user_input.lower():
+        kw = user_input.lower().replace("forget about", "").strip()
+        return "Memory wiped." if memory.forget_memory(kw) else "Error."
+
+    if any(x in user_input.lower() for x in ["decide", "compare"]):
+        p = f"Extract strategic JSON list from: {user_input}. Keys: name, impact, certainty, reversibility, risk, capital, time, penalty."
+        res = ollama.chat(model=LLM_MODEL, messages=[{'role': 'user', 'content': p}])
+        try:
+            raw = res['message']['content']
+            data = json.loads(raw[raw.find("["):raw.rfind("]")+1])
+            ranking = []
+            for o in data:
+                s = calculate_conqueror_score(o.get('impact',5), o.get('certainty',.5), o.get('reversibility',.5), o.get('risk',5), o.get('capital',5), o.get('time',5), o.get('penalty',1))
+                ranking.append(f"{o['name']}: {s}")
+            return "🏆 Strategic Ranking:\n" + "\n".join(ranking)
+        except: return "Strategic Parser Error."
+
+    intent = user_input.lower()
+    triage = "EXISTENTIAL" if any(x in intent for x in ['danger', 'security']) else "STRATEGIC" if "plan" in intent else "TACTICAL"
+    context = memory.get_relevant_context(user_input)
+    
+    sys_p = f"You are Phantom AI. Mode: {triage}. Memory: {context}. Tools: SCAN_DRIVES, LIST_FILES, READ_FILE."
+    resp = ollama.chat(model=LLM_MODEL, messages=[{'role': 'system', 'content': sys_p}, {'role': 'user', 'content': user_input}])
+    ai_msg = resp['message']['content']
+
+    if "SCAN_DRIVES" in ai_msg: tool_res = get_drives()
+    elif "LIST_FILES" in ai_msg: tool_res = list_files(ai_msg.split("LIST_FILES")[-1].strip())
+    elif "READ_FILE" in ai_msg: tool_res = read_file(ai_msg.split("READ_FILE")[-1].strip())
+    else: return ai_msg
+
+    final = ollama.chat(model=LLM_MODEL, messages=[{'role': 'user', 'content': f"Tool Result: {tool_res}\nAnswer: {user_input}"}])
+    return final['message']['content']
+
+if __name__ == "__main__":
+    threading.Thread(target=background_deep_scanner, daemon=True).start()
+    print("--- Phantom AI 1.3 Ready ---")
+    while True:
+        try:
+            msg = input("\nYou: ")
+            if msg.lower() in ['exit', 'quit']: break
+            if msg.lower() in ['report', 'health']:
+                memory.cursor.execute("SELECT COUNT(*), AVG(trust_score) FROM memories")
+                stats = memory.cursor.fetchone()
+                print(f"🧠 Memories: {stats[0]} | 🛡️ Trust: {round(stats[1] or 0, 2)}")
+                continue
+            
+            print("Phantom is thinking...", end="\r")
+            reply = chat_with_ai(msg)
+            print(f"Phantom: {reply}")
+            
+            outcome = "success" if any(x in reply.lower() for x in ["found", "read", "here"]) else "neutral"
+            memory.save_intelligent_memory(PhantomMemoryBrick(f"U: {msg} | A: {reply}", "Interaction", outcome, 0.8))
+        except KeyboardInterrupt: break
